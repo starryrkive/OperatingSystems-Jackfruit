@@ -6,50 +6,50 @@ A lightweight container runtime with kernel-level memory monitoring, designed to
 
 ## Team Information
 
-PES1UG24AM288
-PES1UG24AM295
+- PES1UG24AM288
+- PES1UG24AM295
 
 ---
 
 ## Build, Load and Run Instructions
 
-# Build
+- Build
 make
 
-# Load kernel module
+- Load kernel module
 sudo insmod monitor.ko
 sudo dmesg | tail
 
-# Verify control device
+- Verify control device
 ls -l /dev/container_monitor
 sudo chmod 666 /dev/container_monitor
 
-# Start supervisor
+- Start supervisor
 sudo ./engine supervisor
 
-# Start containers (in another terminal)
+- Start containers (in another terminal)
 sudo ./engine start alpha
 sudo ./engine start beta
 
-# List containers
+- List containers
 sudo ./engine ps
 
-# View logs
+- View logs
 sudo ./engine logs alpha
 
-# Memory monitoring (observe kernel logs)
+- Memory monitoring (observe kernel logs)
 sudo ./engine start alpha
 sudo dmesg -w
 
-# Scheduling experiment
+- Scheduling experiment
 sudo ./cpu_hog
 sudo ./io_pulse
 
-# Clean teardown
+- Clean teardown
 sudo pkill engine
 ps aux | grep engine
 
-# Unload module
+- Unload module
 sudo rmmod monitor
 
 ---
@@ -134,9 +134,9 @@ Justification: Clearly demonstrates scheduler behavior
 ---
 
 ## Scheduler Experiment Results
-Workload	  Behavior
-cpu_hog	    Continuous CPU usage
-io_pulse	  Periodic bursts with idle time
+'''*Workload*'''	  '''*Behavior*'''
+'''cpu_hog'''	    '''Continuous CPU usage'''
+'''io_pulse'''	  ''' Periodic bursts with idle time'''
 
 The scheduler ensures responsiveness for I/O-bound tasks while maintaining fairness for CPU-bound processes, illustrating balanced CPU allocation.
 
