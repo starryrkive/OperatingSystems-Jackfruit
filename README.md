@@ -148,8 +148,8 @@ Justification: Simpler implementation while demonstrating core concepts
 - Justification: Enables accurate memory enforcement
 
 ## Scheduling Experiments
-Choice: Custom workloads
-Tradeoff: Not highly precise benchmarking
+- Choice: Custom workloads
+- Tradeoff: Not highly precise benchmarking
 - Justification: Clearly demonstrates scheduler behavior
 
 ---
