@@ -128,29 +128,29 @@ I/O-bound processes receive more frequent scheduling opportunities, while CPU-bo
 
 # Design Decision and Tradeoffs
 ## Namespace Isolation
-Choice: PID namespace via clone()
-Tradeoff: Limited isolation compared to full container runtimes
+- Choice: PID namespace via clone()
+- Tradeoff: Limited isolation compared to full container runtimes
 Justification: Simpler implementation while demonstrating core concepts
 
 ## Supervisor Architecture
-Choice: Central supervisor process
-Tradeoff: Single point of failure
-Justification: Simplifies lifecycle management and coordination
+- Choice: Central supervisor process
+- Tradeoff: Single point of failure
+- Justification: Simplifies lifecycle management and coordination
 
 ## IPC and Logging
-Choice: UNIX sockets + bounded buffer
-Tradeoff: Increased complexity
-Justification: Demonstrates real-world IPC and synchronization
+- Choice: UNIX sockets + bounded buffer
+- Tradeoff: Increased complexity
+- Justification: Demonstrates real-world IPC and synchronization
 
 ## Kernel Monitor
-Choice: Loadable kernel module with ioctl
-Tradeoff: Requires root privileges and careful debugging
-Justification: Enables accurate memory enforcement
+- Choice: Loadable kernel module with ioctl
+- Tradeoff: Requires root privileges and careful debugging
+- Justification: Enables accurate memory enforcement
 
 ## Scheduling Experiments
 Choice: Custom workloads
 Tradeoff: Not highly precise benchmarking
-Justification: Clearly demonstrates scheduler behavior
+- Justification: Clearly demonstrates scheduler behavior
 
 ---
 
