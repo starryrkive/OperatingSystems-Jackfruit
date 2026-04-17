@@ -6,13 +6,11 @@
 #include <sched.h>
 #include <sys/socket.h>
 #include <sys/un.h>
-#include <sys/ioctl.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <sys/wait.h>
 #include <sys/stat.h>
-
-#include "monitor_ioctl.h"
+#include <sys/resource.h>
 
 #define CONTAINER_ID_LEN 32
 #define STACK_SIZE (1024 * 1024)
@@ -36,6 +34,9 @@ typedef struct {
     int pipe_fd[2];
 } child_args_t;
 
+/*
+ * Child process runs memory_hog
+ */
 int child_fn(void *arg) {
     child_args_t *args = (child_args_t *)arg;
 
@@ -51,44 +52,35 @@ int child_fn(void *arg) {
     return 1;
 }
 
-/* ===================== MEMORY MONITOR ===================== */
+/* ===================== CONTAINER PROFILE ===================== */
 
-void monitor_memory(pid_t pid, int client_fd,
-                    int *soft_triggered,
-                    int *hard_triggered) {
+int assign_profile(const char *id, char *label) {
 
-    char path[64];
-    snprintf(path, sizeof(path), "/proc/%d/status", pid);
-
-    FILE *f = fopen(path, "r");
-    if (!f) return;
-
-    char line[256];
-    long rss_kb = 0;
-
-    while (fgets(line, sizeof(line), f)) {
-        if (strncmp(line, "VmRSS:", 6) == 0) {
-            sscanf(line, "VmRSS: %ld kB", &rss_kb);
-            break;
-        }
-    }
-    fclose(f);
-
-    unsigned long rss_bytes = (unsigned long)rss_kb * 1024;
-
-    const char *soft_msg = "[monitor] SOFT LIMIT exceeded\n";
-    const char *hard_msg = "[monitor] HARD LIMIT exceeded\n";
-
-    if (!(*soft_triggered) && rss_bytes > (20UL * 1024 * 1024)) {
-        write(client_fd, soft_msg, strlen(soft_msg));
-        *soft_triggered = 1;
+    int sum = 0;
+    for (int i = 0; id[i]; i++) {
+        sum += id[i];
     }
 
-    if (!(*hard_triggered) && rss_bytes > (40UL * 1024 * 1024)) {
-        write(client_fd, hard_msg, strlen(hard_msg));
-        kill(pid, SIGKILL);
-        *hard_triggered = 1;
+    int type = sum % 3;
+
+    if (type == 0) {
+        strcpy(label, "FAST");
+        return -5;
+    } 
+    else if (type == 1) {
+        strcpy(label, "NORMAL");
+        return 0;
+    } 
+    else {
+        strcpy(label, "SLOW");
+        return 10;
     }
+}
+
+/* ===================== CPU POLICY ===================== */
+
+void apply_cpu_policy(pid_t pid, int nice_val) {
+    setpriority(PRIO_PROCESS, pid, nice_val);
 }
 
 /* ===================== START ===================== */
@@ -98,7 +90,13 @@ void start_container(const char *id, int client_fd) {
     printf("[engine] starting container: %s\n", id);
 
     child_args_t *args = malloc(sizeof(child_args_t));
-    pipe(args->pipe_fd);
+    if (!args) return;
+
+    if (pipe(args->pipe_fd) < 0) {
+        perror("pipe failed");
+        free(args);
+        return;
+    }
 
     pid_t pid = clone(child_fn,
                       child_stack + STACK_SIZE,
@@ -107,14 +105,22 @@ void start_container(const char *id, int client_fd) {
 
     if (pid < 0) {
         perror("clone failed");
+        free(args);
         return;
     }
 
     close(args->pipe_fd[1]);
 
-    printf("[engine] clone OK, pid=%d\n", pid);
+    /* Assign dynamic profile */
+    char profile[16];
+    int nice_val = assign_profile(id, profile);
 
+    apply_cpu_policy(pid, nice_val);
+
+    /* Store container */
     container_t *c = malloc(sizeof(container_t));
+    if (!c) return;
+
     strncpy(c->id, id, CONTAINER_ID_LEN - 1);
     c->id[CONTAINER_ID_LEN - 1] = '\0';
     c->pid = pid;
@@ -122,46 +128,39 @@ void start_container(const char *id, int client_fd) {
     c->next = containers;
     containers = c;
 
-    usleep(100000);
-
-    int fd = open("/dev/container_monitor", O_RDWR);
-    if (fd >= 0) {
-        struct monitor_request req = {0};
-        req.pid = pid;
-
-        strncpy(req.container_id, id, sizeof(req.container_id) - 1);
-
-        req.soft_limit_bytes = 20UL * 1024 * 1024;
-        req.hard_limit_bytes = 40UL * 1024 * 1024;
-
-        ioctl(fd, MONITOR_REGISTER, &req);
-        close(fd);
-    }
-
     printf("[supervisor] started %s (PID %d)\n", id, pid);
 
+    /* Send response */
     write(client_fd, "OK\n", 3);
 
-    char buf[256];
-    int n, lines = 0;
+    char info[128];
+    int len = snprintf(info, sizeof(info),
+        "[%s] profile=%s nice=%d\n",
+        id, profile, nice_val);
 
-    int soft_triggered = 0;
-    int hard_triggered = 0;
+    write(client_fd, info, len);
+
+    /* Read logs and stop after 10 allocations */
+    char buf[256];
+    int n;
+    int allocations = 0;
 
     while ((n = read(args->pipe_fd[0], buf, sizeof(buf))) > 0) {
 
         write(client_fd, buf, n);
 
-        for (int i = 0; i < n; i++) {
-            if (buf[i] == '\n') lines++;
+        if (strstr(buf, "allocation=")) {
+            allocations++;
         }
 
-        monitor_memory(pid, client_fd,
-                       &soft_triggered,
-                       &hard_triggered);
+        if (allocations >= 10) {
+            write(client_fd,
+                  "\n[engine] stopped after 10 allocations\n",
+                  45);
 
-        if (hard_triggered) break;
-        if (lines >= 10) break;
+            kill(pid, SIGKILL);  // terminate container
+            break;
+        }
     }
 
     close(args->pipe_fd[0]);
@@ -196,14 +195,30 @@ void run_supervisor() {
     unlink(SOCKET_PATH);
 
     int server_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (server_fd < 0) {
+        perror("socket failed");
+        return;
+    }
 
-    struct sockaddr_un addr = {0};
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+
     addr.sun_family = AF_UNIX;
-    strcpy(addr.sun_path, SOCKET_PATH);
+    strncpy(addr.sun_path, SOCKET_PATH, sizeof(addr.sun_path) - 1);
 
-    bind(server_fd, (struct sockaddr *)&addr, sizeof(addr));
+    if (bind(server_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        perror("bind failed");
+        close(server_fd);
+        return;
+    }
+
     chmod(SOCKET_PATH, 0777);
-    listen(server_fd, 5);
+
+    if (listen(server_fd, 5) < 0) {
+        perror("listen failed");
+        close(server_fd);
+        return;
+    }
 
     printf("[supervisor] listening on %s\n", SOCKET_PATH);
 
@@ -212,9 +227,11 @@ void run_supervisor() {
         while (waitpid(-1, NULL, WNOHANG) > 0);
 
         int client = accept(server_fd, NULL, NULL);
+        if (client < 0) continue;
 
         char cmd[128] = {0};
         int n = read(client, cmd, sizeof(cmd) - 1);
+
         if (n <= 0) {
             close(client);
             continue;
@@ -226,7 +243,7 @@ void run_supervisor() {
 
         if (strncmp(cmd, "start ", 6) == 0) {
             char id[32];
-            sscanf(cmd + 6, "%s", id);
+            sscanf(cmd + 6, "%31s", id);
             start_container(id, client);
         }
 
@@ -243,13 +260,20 @@ void run_supervisor() {
 void send_command(const char *cmd) {
 
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) {
+        perror("socket failed");
+        return;
+    }
 
-    struct sockaddr_un addr = {0};
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+
     addr.sun_family = AF_UNIX;
-    strcpy(addr.sun_path, SOCKET_PATH);
+    strncpy(addr.sun_path, SOCKET_PATH, sizeof(addr.sun_path) - 1);
 
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         perror("connect failed");
+        close(fd);
         return;
     }
 
@@ -282,6 +306,10 @@ int main(int argc, char *argv[]) {
     }
 
     else if (strcmp(argv[1], "start") == 0) {
+        if (argc < 3) {
+            printf("Missing container id\n");
+            return 1;
+        }
         char cmd[128];
         snprintf(cmd, sizeof(cmd), "start %s", argv[2]);
         send_command(cmd);
